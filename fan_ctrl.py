@@ -78,10 +78,10 @@ class Config:
         return '{root}/{file}.json'.format(root=Config.ROOT, file=filename)
 
     def __setattr__(self, key, value):
-        if key in ['freq']:
+        if key in ['freq', 'min']:
             self.config_modified = True
             self.config_data[key] = value
-        if key in ['']:
+        else:
             self.modifier_modified = True
             self.modifier_data[key] = value
 
@@ -97,7 +97,26 @@ class Config:
 
 
 class ConfigType:
+    """ PWM Frequency [Hz] """
     freq = None  # type: int
+    """ Fan min speed [%] """
+    min = None  # type: int
+    """ BCM pin used to drive transistor's base """
+    pin = None  # type: int
+    """ Modification period, for example, slower at night """
+    periods = None  # type: typing.List[ModificationPeriod]
+
+
+class ModificationPeriod:
+    """
+    Start of period in seconds
+    For example:
+    0 hours 0 minutes 0 seconds = 0 * 60 * 60 + 0 * 60 + 0,
+    23 hours 59 minutes 59 seconds = 23 * 60 * 60 + 59 * 60 + 59
+    """
+    _from = None
+    """ End of period in seconds """
+    _to = None
 
 
 class IO:
