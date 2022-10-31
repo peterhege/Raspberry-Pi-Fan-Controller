@@ -2,6 +2,8 @@
 # coding: utf-8
 import json
 import os
+import datetime
+import time
 
 try:
     import typing
@@ -78,10 +80,12 @@ class Config:
         return '{root}/{file}.json'.format(root=Config.ROOT, file=filename)
 
     def __setattr__(self, key, value):
-        if key in ['freq', 'min']:
+        if key in ['freq', 'min', 'pin']:
             self.config_modified = True
             self.config_data[key] = value
         else:
+            if key in ['periods']:
+                value = ModificationPeriods(value)
             self.modifier_modified = True
             self.modifier_data[key] = value
 
@@ -104,19 +108,118 @@ class ConfigType:
     """ BCM pin used to drive transistor's base """
     pin = None  # type: int
     """ Modification period, for example, slower at night """
-    periods = None  # type: typing.List[ModificationPeriod]
+    periods = None  # type: ModificationPeriods
+
+
+class ModificationPeriods:
+    list = []  # type: typing.List[ModificationPeriod]
+    active = None  # type: int
+    next = None  # type: int
+
+    def __init__(self, periods):
+        def comp(a, b):  # type: (ModificationPeriod,ModificationPeriod) -> int
+            if a.start < b.start:
+                return -1
+            if a.start > b.start:
+                return 1
+            return 0
+
+        self.list = [ModificationPeriod(**period) for period in periods]
+        self.list.sort(key=comp)
+
+        now = ModificationPeriod.seconds(datetime.datetime.now())
+        i = 0
+        for i in range(len(self.list)):
+            if now >= self.list[i].start:
+                break
+        self.active = i
+        self.next = i + 1 if i < len(self.list) else 0
+
+    def get(self):
+        time_now = ModificationPeriod.seconds(datetime.datetime.now())
+        while not (
+                (
+                        self.list[self.active].start < self.list[self.next].start and
+                        self.list[self.active].start <= time_now < self.list[self.next].start
+                ) or (
+                        self.list[self.active].start >= self.list[self.next].start and
+                        not (self.list[self.active].start >= time_now > self.list[self.next].start)
+                )
+        ):
+            self.active = self.next
+            self.next = self.active + 1 if self.active < len(self.list) else 0
+        return self.list[self.active]
 
 
 class ModificationPeriod:
-    """
-    Start of period in seconds
-    For example:
-    0 hours 0 minutes 0 seconds = 0 * 60 * 60 + 0 * 60 + 0,
-    23 hours 59 minutes 59 seconds = 23 * 60 * 60 + 59 * 60 + 59
-    """
-    _from = None
-    """ End of period in seconds """
-    _to = None
+    """ Start of period in seconds """
+    start = None  # type: float
+    """ Current fan speed modifier [%] """
+    modifier = None  # type: SpeedModifier
+
+    def __init__(
+            self,
+            start,  # type: typing.Union[str,float,datetime.datetime,time.struct_time]
+            modifier  # type: typing.Union[str,int,float,dict,SpeedModifier]
+    ):
+        self.start = ModificationPeriod.seconds(start)
+        self.modifier = modifier if type(modifier) is SpeedModifier else SpeedModifier.create(modifier)
+
+    def modify(self, speed, temp):  # type: (float,float) -> float
+        return self.modifier.modify(speed, temp)
+
+    @staticmethod
+    def seconds(t):  # type: (typing.Union[str,float,datetime.datetime,time.struct_time]) -> float
+        """ str,float,datetime.datetime,time.struct_time """
+        tt = type(t)
+        if tt is float or tt is int:
+            return t
+
+        if tt is str:
+            if t.isnumeric():
+                return float(t)
+            t = datetime.datetime.strptime(t, '%H:%M:%S')
+            tt = type(t)
+
+        if tt is datetime.datetime:
+            delta = datetime.timedelta(hours=t.hour, minutes=t.minute, seconds=t.second)
+        else:
+            delta = datetime.timedelta(hours=t.tm_hour, minutes=t.tm_min, seconds=t.tm_sec)
+
+        return delta.total_seconds()
+
+
+class SpeedModifier:
+    @staticmethod
+    def create(modifier):
+        if type(modifier) is dict:
+            return TempSpeedModifier(**modifier)
+        else:
+            return SimpleSpeedModifier(modifier)
+
+    def modify(self, speed, temp):
+        return self.calculate(speed, temp)
+
+    def calculate(self, speed, temp):
+        return speed
+
+
+class SimpleSpeedModifier(SpeedModifier):
+    modifier = None  # type: float
+
+    def __init__(self, modifier):
+        self.modifier = modifier
+
+    def calculate(self, speed, temp=None):  # type: (float, float) -> float
+        return speed + self.modifier
+
+
+class TempSpeedModifier(SpeedModifier):
+    def __init__(self, intervals):
+        pass
+
+    def calculate(self, speed, temp):
+        pass
 
 
 class IO:
