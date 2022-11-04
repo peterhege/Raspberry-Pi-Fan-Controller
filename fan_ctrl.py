@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 # coding: utf-8
+
 import json
+import math
 import os
 import datetime
 import time
-
-try:
-    import typing
-except:
-    pass
+import typing
 
 FAN_PIN = 21  # BCM pin used to drive transistor's base
 WAIT_TIME = 1  # [s] Time to wait between each refresh
 FAN_MIN = 40  # [%] Fan minimum speed.
 PWM_FREQ = 25  # [Hz] Change this value if fan has strange behavior
-NIGHT_FROM = 22
-NIGHT_TO = 7
 FAN_DATA = os.path.dirname(os.path.realpath(__file__)) + '/fan_speed.json'
 
 
@@ -35,6 +31,10 @@ class Config:
         menu = [
             {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency}
         ]
+
+        if instance.pin is None:
+            instance.set_pin()
+
         print('What would you like to do?\n')
         for i in range(len(menu)):
             print('{i}. {name}'.format(i=i, name=menu[i]['name']))
@@ -99,6 +99,15 @@ class Config:
     def calibrate_frequency(self):
         pass
 
+    def set_pin(self):
+        pin = input('Fan GPIO Pin: ')
+        pins = list(range(2, 13 + 1)) + list(range(16, 27 + 1))
+        if type(pin) is not int or pin not in pins:
+            print('Invalid GPIO Pin: {}! Valid pins: {}'.format(pin, ', '.join(pins)))
+
+        self.config_data['pin'] = pin
+        Config.menu()
+
 
 class ConfigType:
     """ PWM Frequency [Hz] """
@@ -117,12 +126,8 @@ class ModificationPeriods:
     next = None  # type: int
 
     def __init__(self, periods):
-        def comp(a, b):  # type: (ModificationPeriod,ModificationPeriod) -> int
-            if a.start < b.start:
-                return -1
-            if a.start > b.start:
-                return 1
-            return 0
+        def comp(a, b):  # type: (ModificationPeriod,ModificationPeriod) -> float
+            return a.start - b.start
 
         self.list = [ModificationPeriod(**period) for period in periods]
         self.list.sort(key=comp)
@@ -136,6 +141,8 @@ class ModificationPeriods:
         self.next = i + 1 if i < len(self.list) else 0
 
     def get(self):
+        if not self.list:
+            return None
         time_now = ModificationPeriod.seconds(datetime.datetime.now())
         while not (
                 (
@@ -197,10 +204,10 @@ class SpeedModifier:
         else:
             return SimpleSpeedModifier(modifier)
 
-    def modify(self, speed, temp):
+    def modify(self, speed, temp):  # type: (float, float) -> float
         return self.calculate(speed, temp)
 
-    def calculate(self, speed, temp):
+    def calculate(self, speed, temp):  # type: (float, float) -> float
         return speed
 
 
@@ -215,11 +222,69 @@ class SimpleSpeedModifier(SpeedModifier):
 
 
 class TempSpeedModifier(SpeedModifier):
-    def __init__(self, intervals):
-        pass
+    intervals = None  # type: TempSpeedModifierIntervals
 
-    def calculate(self, speed, temp):
-        pass
+    def __init__(self, intervals):
+        self.intervals = TempSpeedModifierIntervals(intervals)
+
+    def calculate(self, speed, temp):  # type: (float, float) -> float
+        return self.intervals.get(temp).calculate(speed)
+
+
+class TempSpeedModifierIntervals:
+    list = []  # type: typing.List[TempSpeedModifierInterval]
+
+    def __init__(self, intervals):
+        def comp(a, b):  # type: (TempSpeedModifierInterval,TempSpeedModifierInterval) -> float
+            return a.temp - b.temp
+
+        self.list = [TempSpeedModifierInterval(**interval) for interval in intervals]
+        self.list.sort(key=comp)
+
+    def get(self, temp):  # type: (float) -> TempSpeedModifierInterval
+        if not self.list:
+            return TempSpeedModifierInterval()
+        if temp < self.list[0].temp:
+            return TempSpeedModifierInterval(modifier=self.list[0].modifier)
+        if len(self.list) == 1:
+            return self.list[0]
+        if temp > self.list[-1].temp:
+            return self.list[-1]
+
+        ll = 0
+        ul = len(self.list) - 1
+        if ul == 0:
+            return self.list[0]
+
+        while True:
+            i = ll + math.floor((ul - ll) / 2)
+            if self.list[i].temp < temp < self.list[i + 1].temp:
+                return self.list[i]
+            if self.list[i].temp > temp:
+                ul = i
+            else:
+                ll = i
+
+
+class TempSpeedModifierInterval:
+    temp = None  # type: float
+    modifier = None  # type: float
+    fix = None  # type: bool
+
+    def __init__(
+            self,
+            temp=0,  # type: float
+            modifier=0,  # type: float
+            fix=False  # type: bool
+    ):
+        self.temp = temp
+        self.modifier = modifier
+        self.fix = fix
+
+    def calculate(self, speed):  # type: (float) -> float
+        if self.fix:
+            return self.modifier
+        return speed + self.modifier
 
 
 class IO:
