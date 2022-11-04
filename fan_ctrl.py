@@ -28,12 +28,13 @@ class Config:
     @staticmethod
     def menu():
         instance = Config.instance()
-        menu = [
-            {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency}
-        ]
 
         if instance.pin is None:
             instance.set_pin()
+
+        menu = [
+            {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency}
+        ]
 
         print('What would you like to do?\n')
         for i in range(len(menu)):
