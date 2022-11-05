@@ -8,29 +8,67 @@ import datetime
 import time
 import typing
 
+try:
+    import RPi.GPIO as GPIO
+except (RuntimeError, ModuleNotFoundError):
+    from fake_rpi.RPi import GPIO
+
 FAN_PIN = 21  # BCM pin used to drive transistor's base
 WAIT_TIME = 1  # [s] Time to wait between each refresh
 FAN_MIN = 40  # [%] Fan minimum speed.
 PWM_FREQ = 25  # [Hz] Change this value if fan has strange behavior
-FAN_DATA = os.path.dirname(os.path.realpath(__file__)) + '/fan_speed.json'
+
+
+class Controller:
+    pwm = None  # type: GPIO.PWM
+    pin = None  # type: int
+
+    @staticmethod
+    def fan():
+        pin = Config.pin()
+
+        if Controller.pwm is None or pin != Controller.pin:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(FAN_PIN, GPIO.OUT, initial=GPIO.LOW)
+
+            Controller.pin = pin
+            Controller.pwm = GPIO.PWM(pin, Config.freq())
+            Controller.pwm.start(0)
+
+        return Controller.pwm
+
+    @staticmethod
+    def speed(speed, min_speed=None):
+        if min_speed is None:
+            min_speed = Config.min()
+
+        if speed > 100:
+            speed = 100
+        if speed < min_speed:
+            speed = min_speed
+
+        Controller.fan().ChangeDutyCycle(speed)
+
+    @staticmethod
+    def freq(freq):
+        if freq < 1:
+            freq = 1
+        Controller.fan().ChangeFrequency(freq)
 
 
 class Config:
-    ROOT = 'data'
-    config = None  # type: typing.Union[ConfigType, Config, None]
-
-    config_data = {}
-    modifier_data = {}
-
-    config_modified = False
-    modifier_modified = False
+    ROOT = 'fan_ctrl_data'
+    config = None  # type: typing.Union[ConfigType, ConfigData, None]
 
     @staticmethod
     def menu():
         instance = Config.instance()
 
         if instance.pin is None:
-            instance.set_pin()
+            return instance.install()
+
+        if instance.min is None:
+            instance.calibrate_min_speed()
 
         menu = [
             {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency}
@@ -51,6 +89,7 @@ class Config:
             Config.menu()
 
         menu[menu_index]['method']()
+        Config.menu()
 
     @staticmethod
     def instance(force_config=False, force_modifier=False):  # type: (bool, bool) -> typing.Union[Config, ConfigType]
@@ -65,7 +104,7 @@ class Config:
     @staticmethod
     def init(read_config=False, read_modifier=False):
         if Config.config is None:
-            Config.config = Config()
+            Config.config = ConfigData()
         if read_config:
             Config.read('config')
         if read_modifier:
@@ -79,6 +118,35 @@ class Config:
     @staticmethod
     def filename(filename):
         return '{root}/{file}.json'.format(root=Config.ROOT, file=filename)
+
+    @staticmethod
+    def pin():
+        instance = Config.instance()
+        if instance.pin:
+            return instance.pin
+        return FAN_PIN
+
+    @staticmethod
+    def freq():
+        instance = Config.instance()
+        if instance.freq:
+            return instance.freq
+        return PWM_FREQ
+
+    @staticmethod
+    def min():
+        instance = Config.instance()
+        if instance.min:
+            return instance.min
+        return FAN_MIN
+
+
+class ConfigData:
+    config_data = {}
+    modifier_data = {}
+
+    config_modified = False
+    modifier_modified = False
 
     def __setattr__(self, key, value):
         if key in ['freq', 'min', 'pin']:
@@ -97,17 +165,48 @@ class Config:
             return self.modifier_data[item]
         return None
 
-    def calibrate_frequency(self):
-        pass
+    def install(self):
+        self.set_pin()
+
+        Controller.speed(100)
+
+        works = input('Is the fan working properly? [Y/n]').lower() == 'y'
+        if not works:
+            self.calibrate_frequency()
+
+        self.calibrate_min_speed()
 
     def set_pin(self):
         pin = input('Fan GPIO Pin: ')
         pins = list(range(2, 13 + 1)) + list(range(16, 27 + 1))
-        if type(pin) is not int or pin not in pins:
+        if not pin.isnumeric() or int(pin) not in pins:
             print('Invalid GPIO Pin: {}! Valid pins: {}'.format(pin, ', '.join(pins)))
+            return self.set_pin()
 
-        self.config_data['pin'] = pin
-        Config.menu()
+        self.pin = int(pin)
+
+    def calibrate_min_speed(self):
+        print('Increase the value until the fan moves. When it moves, write done.')
+        # TODO
+
+    def calibrate_frequency(self):
+        Controller.speed(100)
+        print('Change the value until the fan working properly. When it fine, write done.')
+        valid = False
+
+        while True:
+            freq = input('Frequency value: ')
+            if freq.lower() == 'done':
+                break
+            if not freq.isnumeric() or int(freq) < 1:
+                print('Invalid Frequency value: {}'.format(freq))
+                valid = False
+                continue
+            valid = True
+            Controller.freq(int(freq))
+
+        if valid:
+            self.freq = int(freq)
 
 
 class ConfigType:
