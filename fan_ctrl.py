@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # coding: utf-8
-
+import argparse
 import json
 import math
 import os
 import datetime
+import sys
 import time
 import typing
 
@@ -22,6 +23,10 @@ PWM_FREQ = 25  # [Hz] Change this value if fan has strange behavior
 class Controller:
     pwm = None  # type: GPIO.PWM
     pin = None  # type: int
+
+    @staticmethod
+    def run():
+        pass
 
     @staticmethod
     def fan():
@@ -71,7 +76,11 @@ class Config:
             instance.calibrate_min_speed()
 
         menu = [
-            {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency}
+            {'name': 'Calibrate Start Speed', 'method': instance.calibrate_min_speed},
+            {'name': 'Set Start Speed', 'method': instance.set_min_speed},
+            {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency},
+            {'name': 'Change Fan GPIO Pin', 'method': instance.set_pin},
+            {'name': 'Save and Exit', 'method': Config.save_and_exit},
         ]
 
         print('What would you like to do?\n')
@@ -111,9 +120,38 @@ class Config:
             Config.read('modifier')
 
     @staticmethod
+    def exit():
+        ex = True
+        if Config.config and (Config.config.config_modified or Config.config.modifier_modified):
+            ex = input('You have unsaved changes, are you sure you are exiting?').lower() == 'y'
+        if ex:
+            sys.exit()
+
+    @staticmethod
+    def save_and_exit():
+        Config.save(True)
+        sys.exit()
+
+    @staticmethod
+    def save(info=False):
+        if not Config.config:
+            return
+        if Config.config.config_modified:
+            if info:
+                # TODO: Check if the script is running
+                print('\nYou need to restart {} for the changes to take effect!'.format(os.path.basename(__file__)))
+            Config.write('config')
+        if Config.config.modifier_modified:
+            Config.write('modifier')
+
+    @staticmethod
     def read(filename):
         for k, v in IO.read(Config.filename(filename)).items():
             setattr(Config.config, k, v)
+
+    @staticmethod
+    def write(filename):
+        IO.write(Config.filename(filename), Config.config['{}_data'.format(filename)])
 
     @staticmethod
     def filename(filename):
@@ -170,42 +208,89 @@ class ConfigData:
 
         Controller.speed(100)
 
-        works = input('Is the fan working properly? [Y/n]').lower() == 'y'
+        works = input('Is the fan working properly? [y/n]').lower() == 'y'
+        print()
+
         if not works:
             self.calibrate_frequency()
 
         self.calibrate_min_speed()
 
     def set_pin(self):
+        print()
         pin = input('Fan GPIO Pin: ')
         pins = list(range(2, 13 + 1)) + list(range(16, 27 + 1))
         if not pin.isnumeric() or int(pin) not in pins:
-            print('Invalid GPIO Pin: {}! Valid pins: {}'.format(pin, ', '.join(pins)))
+            print('\nInvalid GPIO Pin: {}! Valid pins: {}\n'.format(pin, ', '.join(pins)))
             return self.set_pin()
 
+        print('\nThe set pin is {}\n'.format(pin))
         self.pin = int(pin)
 
     def calibrate_min_speed(self):
-        print('Increase the value until the fan moves. When it moves, write done.')
-        # TODO
+        print('\nCalibrate the fan start speed [%]...\n')
+        ll = 0
+        ul = 100
+
+        while True:
+            speed = ll + math.floor((ul - ll) / 2)
+            Controller.speed(speed, 0)
+            is_spinning = input('Is the fan spinning ({}%) [y/n]? '.format(speed)).lower() == 'y'
+
+            if is_spinning:
+                ul = speed
+            else:
+                ll = speed
+
+            if ll == speed or ul == speed:
+                break
+
+            if is_spinning:
+                Controller.speed(0, 0)
+                for i in range(3):
+                    print('Waiting to stop... {}s'.format(3 - i), end='\r')
+                    time.sleep(1)
+
+        speed += 2
+        print('\nThe start speed is {}\n'.format(speed))
+        self.min = speed
+
+    def set_min_speed(self):
+        speed = input('Start speed [%]: ').rstrip(' %')
+
+        if not speed.isnumeric() or int(speed) < 1:
+            print('\nInvalid Speed value: {}\n'.format(speed))
+            return self.set_min_speed()
+
+        speed = int(speed)
+        Controller.speed(speed, 0)
+
+        is_spinning = input('Is the fan spinning ({}%) [y/n]? '.format(speed)).lower() == 'y'
+
+        if not is_spinning:
+            return self.set_min_speed()
+
+        self.min = speed
 
     def calibrate_frequency(self):
         Controller.speed(100)
-        print('Change the value until the fan working properly. When it fine, write done.')
+        print('\nChange the value until the fan working properly. When it fine, write done.\n')
         valid = False
 
         while True:
-            freq = input('Frequency value: ')
+            freq = input('Frequency value [Hz]: ').rstrip(' HhZz')
             if freq.lower() == 'done':
+                print('\nThe set frequency is {}Hz\n'.format(freq))
                 break
             if not freq.isnumeric() or int(freq) < 1:
-                print('Invalid Frequency value: {}'.format(freq))
+                print('\nInvalid Frequency value: {}\n'.format(freq))
                 valid = False
                 continue
             valid = True
             Controller.freq(int(freq))
 
         if valid:
+            print('\nThe set Frequency is {}\n'.format(freq))
             self.freq = int(freq)
 
 
@@ -358,7 +443,7 @@ class TempSpeedModifierIntervals:
 
         while True:
             i = ll + math.floor((ul - ll) / 2)
-            if self.list[i].temp < temp < self.list[i + 1].temp:
+            if self.list[i].temp <= temp < self.list[i + 1].temp:
                 return self.list[i]
             if self.list[i].temp > temp:
                 ul = i
@@ -405,3 +490,42 @@ class IO:
     @staticmethod
     def filename(filename):  # type: (str) -> str
         return '{root}/{file}'.format(root=IO.ROOT, file=filename)
+
+
+def run():
+    try:
+        Controller.run()
+    except KeyboardInterrupt:
+        GPIO.cleanup()
+        sys.exit()
+    except (RuntimeError, Exception) as e:
+        GPIO.cleanup()
+        time.sleep(1)
+        run()
+
+
+def config():
+    try:
+        Config.menu()
+    except KeyboardInterrupt:
+        Config.exit()
+        Config.menu()
+
+
+def from_args():
+    parser = argparse.ArgumentParser(description='Fan Controller')
+    sub_parser = parser.add_subparsers(dest='command')
+
+    config_parser = sub_parser.add_parser('config', help='Fan Controller Configuration')
+
+    args = parser.parse_args()
+
+    if args.command == 'config':
+        config()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) == 1:
+        run()
+    else:
+        from_args()
