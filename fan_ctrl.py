@@ -19,6 +19,8 @@ WAIT_TIME = 1  # [s] Time to wait between each refresh
 FAN_MIN = 40  # [%] Fan minimum speed.
 PWM_FREQ = 25  # [Hz] Change this value if fan has strange behavior
 
+GPIO.setwarnings(False)
+
 
 class Controller:
     pwm = None  # type: GPIO.PWM
@@ -49,7 +51,7 @@ class Controller:
 
         if speed > 100:
             speed = 100
-        if speed < min_speed:
+        if speed < min_speed and speed != 0:
             speed = min_speed
 
         Controller.fan().ChangeDutyCycle(speed)
@@ -70,7 +72,7 @@ class Config:
         instance = Config.instance()
 
         if instance.pin is None:
-            return instance.install()
+            instance.install()
 
         if instance.min is None:
             instance.calibrate_min_speed()
@@ -81,13 +83,14 @@ class Config:
             {'name': 'Calibrate Frequency', 'method': instance.calibrate_frequency},
             {'name': 'Change Fan GPIO Pin', 'method': instance.set_pin},
             {'name': 'Save and Exit', 'method': Config.save_and_exit},
+            {'name': 'Exit', 'method': Config.exit},
         ]
 
         print('What would you like to do?\n')
         for i in range(len(menu)):
             print('{i}. {name}'.format(i=i, name=menu[i]['name']))
 
-        menu_index = input('Menu Index: ')
+        menu_index = input('\nMenu Index: ')
         if not menu_index.isnumeric():
             print('Error: Invalid index!\n')
             Config.menu()
@@ -190,7 +193,7 @@ class ConfigData:
         if key in ['freq', 'min', 'pin']:
             self.config_modified = True
             self.config_data[key] = value
-        else:
+        elif key in ['periods']:
             if key in ['periods']:
                 value = ModificationPeriods(value)
             self.modifier_modified = True
@@ -208,7 +211,7 @@ class ConfigData:
 
         Controller.speed(100)
 
-        works = input('Is the fan working properly? [y/n]').lower() == 'y'
+        works = input('Is the fan working properly? [y/n]: ').lower() == 'y'
         print()
 
         if not works:
@@ -228,32 +231,60 @@ class ConfigData:
         self.pin = int(pin)
 
     def calibrate_min_speed(self):
-        print('\nCalibrate the fan start speed [%]...\n')
+        def wait(msg='Waiting to stop... {}s'):
+            w = 3
+            for i in range(w + 1):
+                print(msg.format(w - i), end='\r')
+                time.sleep(1)
+
+        print()
+        Controller.speed(0)
+        wait('Calibrate the fan start speed [%]... {}s')
+        print()
+
         ll = 0
         ul = 100
+        min_speed = None
 
         while True:
             speed = ll + math.floor((ul - ll) / 2)
+
             Controller.speed(speed, 0)
-            is_spinning = input('Is the fan spinning ({}%) [y/n]? '.format(speed)).lower() == 'y'
+            is_spinning = input('Is the fan spinning ({}%)? [y/n]: '.format(speed)).lower() == 'y'
 
             if is_spinning:
                 ul = speed
             else:
                 ll = speed
 
-            if ll == speed or ul == speed:
+            if ll == ul or ll == speed + 1 or ul == speed + 1:
                 break
 
             if is_spinning:
-                Controller.speed(0, 0)
-                for i in range(3):
-                    print('Waiting to stop... {}s'.format(3 - i), end='\r')
-                    time.sleep(1)
+                min_speed = speed
+                Controller.speed(0)
+                wait()
 
-        speed += 2
-        print('\nThe start speed is {}\n'.format(speed))
-        self.min = speed
+        print('\nTest 5 times...\n')
+
+        is_spinning = True
+        i = 0
+        while i < 5:
+            if is_spinning:
+                Controller.speed(0)
+                wait()
+            else:
+                min_speed += 1
+                i = 0
+                print('\nNew value: {}%\n'.format(min_speed))
+
+            Controller.speed(min_speed)
+            is_spinning = input('{}. Is the fan spinning? [y/n]: '.format(i + 1)).lower() == 'y'
+            i += 1
+
+        min_speed += 1
+        print('\nThe start speed is {}% (with 1% correction)\n'.format(min_speed))
+        self.min = min_speed
 
     def set_min_speed(self):
         speed = input('Start speed [%]: ').rstrip(' %')
@@ -265,7 +296,7 @@ class ConfigData:
         speed = int(speed)
         Controller.speed(speed, 0)
 
-        is_spinning = input('Is the fan spinning ({}%) [y/n]? '.format(speed)).lower() == 'y'
+        is_spinning = input('Is the fan spinning ({}%)? [y/n]: '.format(speed)).lower() == 'y'
 
         if not is_spinning:
             return self.set_min_speed()
@@ -484,7 +515,11 @@ class IO:
 
     @staticmethod
     def write(filename, dictionary):  # type: (str,dict) -> None
-        with open(IO.filename(filename), 'w') as f:
+        filename = IO.filename(filename)
+        dirname = os.path.dirname(filename)
+        if not os.path.exists(dirname):
+            os.makedirs(dirname, exist_ok=True)
+        with open(filename, 'w') as f:
             json.dump(dictionary, f)
 
     @staticmethod
