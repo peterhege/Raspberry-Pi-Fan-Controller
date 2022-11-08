@@ -119,14 +119,16 @@ class Config:
             Config.config = ConfigData()
         if read_config:
             Config.read('config')
+            Config.config.config_modified = False
         if read_modifier:
             Config.read('modifier')
+            Config.config.modifier_modified = False
 
     @staticmethod
     def exit():
         ex = True
         if Config.config and (Config.config.config_modified or Config.config.modifier_modified):
-            ex = input('You have unsaved changes, are you sure you are exiting?').lower() == 'y'
+            ex = input('Are you sure you want to quit? Your changes will not be saved! [y/n] ').lower() == 'y'
         if ex:
             sys.exit()
 
@@ -154,7 +156,7 @@ class Config:
 
     @staticmethod
     def write(filename):
-        IO.write(Config.filename(filename), Config.config['{}_data'.format(filename)])
+        IO.write(Config.filename(filename), getattr(Config.config, '{}_data'.format(filename)))
 
     @staticmethod
     def filename(filename):
@@ -185,25 +187,27 @@ class Config:
 class ConfigData:
     config_data = {}
     modifier_data = {}
-
-    config_modified = False
-    modifier_modified = False
+    data = {}
 
     def __setattr__(self, key, value):
         if key in ['freq', 'min', 'pin']:
-            self.config_modified = True
+            self.data['config_modified'] = True
             self.config_data[key] = value
         elif key in ['periods']:
             if key in ['periods']:
                 value = ModificationPeriods(value)
-            self.modifier_modified = True
+            self.data['modifier_modified'] = True
             self.modifier_data[key] = value
+        else:
+            self.data[key] = value
 
     def __getattr__(self, item):
         if item in self.config_data:
             return self.config_data[item]
         if item in self.modifier_data:
             return self.modifier_data[item]
+        if item in self.data:
+            return self.data[item]
         return None
 
     def install(self):
@@ -217,7 +221,7 @@ class ConfigData:
         if not works:
             self.calibrate_frequency()
 
-        self.calibrate_min_speed()
+        # self.calibrate_min_speed()
 
     def set_pin(self):
         print()
@@ -334,6 +338,9 @@ class ConfigType:
     pin = None  # type: int
     """ Modification period, for example, slower at night """
     periods = None  # type: ModificationPeriods
+
+    config_modified = False
+    modifier_modified = False
 
 
 class ModificationPeriods:
